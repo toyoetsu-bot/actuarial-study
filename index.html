@@ -410,17 +410,38 @@ async function patchGistFile(filename, content) {
   return res;
 }
 
-function getImagesFromCache(qid, type) {
+async function loadImagesForModal(qid, type) {
   if (!gistData?.files) return [];
   const prefix = `img_${qid}_${type}_`;
-  return Object.entries(gistData.files)
-    .filter(([k, v]) => k.startsWith(prefix) && v?.content)
-    .map(([k, v]) => ({ key: k, dataUrl: v.content }))
+  const entries = Object.entries(gistData.files)
+    .filter(([k, v]) => k.startsWith(prefix) && v)
     .sort((a, b) => {
-      const nA = parseInt(a.key.replace(prefix, '')) || 0;
-      const nB = parseInt(b.key.replace(prefix, '')) || 0;
+      const nA = parseInt(a[0].replace(prefix, '')) || 0;
+      const nB = parseInt(b[0].replace(prefix, '')) || 0;
       return nA - nB;
     });
+  const images = [];
+  for (const [key, file] of entries) {
+    let dataUrl;
+    if (file.truncated) {
+      // Gist APIが1MB超でコンテンツを切る → raw_urlから全文取得
+      try {
+        const res = await fetch(file.raw_url, {
+          headers: { 'Authorization': `Bearer ${githubToken}` }
+        });
+        dataUrl = await res.text();
+        // キャッシュに完全なコンテンツを保存（次回は再フェッチ不要）
+        gistData.files[key] = { ...file, content: dataUrl, truncated: false };
+      } catch(e) {
+        console.warn('raw_url fetch failed:', key, e);
+        continue;
+      }
+    } else {
+      dataUrl = file.content;
+    }
+    if (dataUrl?.startsWith('data:')) images.push({ key, dataUrl });
+  }
+  return images;
 }
 
 // =====================================================
@@ -595,16 +616,28 @@ function compressImage(dataUrl) {
     const img = new Image();
     img.onerror = () => reject(new Error('画像の読み込みに失敗しました'));
     img.onload = () => {
-      const MAX = 1400;
+      // GitHub Gist API は1MB超でコンテンツを途中で切る。
+      // base64文字列が850KB未満になるよう段階的に圧縮する。
+      const MAX_W = 1200;
       let w = img.naturalWidth, h = img.naturalHeight;
-      if (w > MAX) { h = Math.round(h * MAX / w); w = MAX; }
+      if (w > MAX_W) { h = Math.round(h * MAX_W / w); w = MAX_W; }
       const c = document.createElement('canvas');
       c.width = w; c.height = h;
       c.getContext('2d').drawImage(img, 0, 0, w, h);
-      const out = c.toDataURL('image/jpeg', 0.82);
-      const kb = Math.round(out.length * 0.75 / 1024);
-      if (kb > 900) reject(new Error(`圧縮後も${kb}KBです。画像をトリミングしてから貼り付けてください。`));
-      else resolve({ dataUrl: out, kb });
+
+      // 品質を下げながら850KB以内に収める
+      let out, quality = 0.78;
+      do {
+        out = c.toDataURL('image/jpeg', quality);
+        quality -= 0.08;
+      } while (out.length > 850_000 && quality > 0.2);
+
+      if (out.length > 850_000) {
+        reject(new Error('圧縮しても画像が大きすぎます。もっと小さい範囲をトリミングしてから貼り付けてください。'));
+      } else {
+        const kb = Math.round(out.length * 0.75 / 1024);
+        resolve({ dataUrl: out, kb });
+      }
     };
     img.src = dataUrl;
   });
@@ -636,9 +669,14 @@ async function appendImageFromDataUrl(rawDataUrl) {
       }
     });
     gistData = res;
+    // PATCHレスポンスでは画像がtruncatedになる場合があるため、
+    // アップロードしたコンテンツをキャッシュに直接セットしておく
+    if (gistData.files[imgKey]) {
+      gistData.files[imgKey] = { ...gistData.files[imgKey], content: compressed, truncated: false };
+    }
     setSyncState('ok');
     // モーダル更新
-    modalImages = getImagesFromCache(qid, type);
+    modalImages = await loadImagesForModal(qid, type);
     renderModalImages();
     renderRowById(qid);
     showToast(`✅ 画像を保存しました (${kb}KB)`);
@@ -668,7 +706,7 @@ async function deleteImageFromGist(imgKey) {
     });
     gistData = res;
     setSyncState('ok');
-    modalImages = getImagesFromCache(qid, type);
+    modalImages = await loadImagesForModal(qid, type);
     renderModalImages();
     renderRowById(qid);
     showToast('🗑️ 削除しました');
@@ -696,14 +734,16 @@ function closeViewModal() {
   document.getElementById('view-modal').classList.remove('open');
   document.removeEventListener('paste', handleGlobalPaste);
 }
-function switchTab(type) {
+async function switchTab(type) {
   modalState.type = type;
   document.getElementById('tabq').className = 'ntab' + (type==='q' ? ' aq' : '');
   document.getElementById('taba').className = 'ntab' + (type==='a' ? ' aa' : '');
   const b = document.getElementById('mbadge');
   b.textContent = type === 'q' ? '問題' : '回答';
   b.className = 'mtbadge ' + (type==='q' ? 'bq' : 'ba');
-  modalImages = getImagesFromCache(modalState.qid, type);
+  // ローディング表示（画像を取得中）
+  document.getElementById('mbody').innerHTML = '<div class="img-loading">⏳ 画像を読み込み中…</div>';
+  modalImages = await loadImagesForModal(modalState.qid, type);
   renderModalImages();
 }
 
