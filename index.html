@@ -347,6 +347,7 @@ const GIST_DESC   = 'アクチュアリー試験 学習アプリ データ';
 let githubToken  = null;
 let gistId       = null;
 let gistData     = null;   // キャッシュ（GistのAPIレスポンス）
+let imageCache   = {};     // imgKey → dataUrl（APIレスポンスに依存しない永続キャッシュ）
 let questions    = [];
 let modalState   = { qid: null, type: 'q' };
 let modalImages  = [];
@@ -422,24 +423,37 @@ async function loadImagesForModal(qid, type) {
     });
   const images = [];
   for (const [key, file] of entries) {
-    let dataUrl;
-    if (file.truncated) {
-      // Gist APIが1MB超でコンテンツを切る → raw_urlから全文取得
-      try {
-        const res = await fetch(file.raw_url, {
-          headers: { 'Authorization': `Bearer ${githubToken}` }
-        });
-        dataUrl = await res.text();
-        // キャッシュに完全なコンテンツを保存（次回は再フェッチ不要）
-        gistData.files[key] = { ...file, content: dataUrl, truncated: false };
-      } catch(e) {
-        console.warn('raw_url fetch failed:', key, e);
-        continue;
-      }
-    } else {
-      dataUrl = file.content;
+    // ① imageCacheに完全なコンテンツがあればそれを使う（API更新で上書きされても安全）
+    if (imageCache[key]) {
+      images.push({ key, dataUrl: imageCache[key] });
+      continue;
     }
-    if (dataUrl?.startsWith('data:')) images.push({ key, dataUrl });
+    let dataUrl = file.content;
+    // ② APIレスポンスが切れている or data:で始まらない場合はraw_urlから取得
+    if (file.truncated || !dataUrl?.startsWith('data:')) {
+      if (!file.raw_url) continue;
+      try {
+        // まずAuthなしで試す（CORS preflight不要）
+        let res = await fetch(file.raw_url);
+        if (!res.ok) throw new Error('not ok');
+        dataUrl = await res.text();
+      } catch {
+        try {
+          // 失敗したらAuthヘッダー付きで再試行
+          const res2 = await fetch(file.raw_url, {
+            headers: { 'Authorization': `Bearer ${githubToken}` }
+          });
+          dataUrl = await res2.text();
+        } catch(e2) {
+          console.warn('raw_url fetch failed:', key, e2);
+          continue;
+        }
+      }
+    }
+    if (dataUrl?.startsWith('data:')) {
+      imageCache[key] = dataUrl;   // ③ 取得成功 → imageCacheに保存
+      images.push({ key, dataUrl });
+    }
   }
   return images;
 }
@@ -670,11 +684,8 @@ async function appendImageFromDataUrl(rawDataUrl) {
       }
     });
     gistData = res;
-    // PATCHレスポンスでは画像がtruncatedになる場合があるため、
-    // アップロードしたコンテンツをキャッシュに直接セットしておく
-    if (gistData.files[imgKey]) {
-      gistData.files[imgKey] = { ...gistData.files[imgKey], content: compressed, truncated: false };
-    }
+    // アップロードした画像をimageCacheに登録（APIレスポンスのtruncatedに左右されない）
+    imageCache[imgKey] = compressed;
     setSyncState('ok');
     // モーダル更新
     modalImages = await loadImagesForModal(qid, type);
@@ -692,6 +703,7 @@ async function appendImageFromDataUrl(rawDataUrl) {
 
 async function deleteImageFromGist(imgKey) {
   if (!confirm('この画像を削除しますか？')) return;
+  delete imageCache[imgKey];   // キャッシュからも削除
   const { qid, type } = modalState;
   const q = questions.find(q => q.id === qid);
   if (!q) return;
