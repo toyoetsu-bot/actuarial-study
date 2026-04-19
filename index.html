@@ -99,7 +99,7 @@ tbody tr:hover{background:#f8fafc;}
 tbody tr.hr{display:none;}
 td{padding:10px 12px;vertical-align:middle;}
 .cn{width:50px;text-align:center;} .cs{width:88px;} .cy{width:66px;} .cq{width:112px;}
-.cqv,.cav{width:138px;} .cu{width:152px;} .ca{width:48px;text-align:center;}
+.cqv,.cav{width:138px;} .cu{width:152px;} .ca{width:72px;text-align:center;}
 .nbadge{display:inline-flex;align-items:center;justify-content:center;width:27px;height:27px;background:var(--bg);border-radius:50%;font-size:.75rem;font-weight:700;color:var(--sub);}
 .stag{display:inline-block;background:#ede9fe;color:#7c3aed;border-radius:6px;padding:2px 7px;font-size:.72rem;font-weight:600;}
 .ytxt{color:var(--sub);font-size:.8rem;}
@@ -114,8 +114,11 @@ td{padding:10px 12px;vertical-align:middle;}
 .ubtn.um{border-color:var(--maru);color:var(--maru);} .ubtn.um.sel{background:var(--maru);color:#fff;}
 .ubtn.us{border-color:var(--tri);color:var(--tri);}   .ubtn.us.sel{background:var(--tri);color:#fff;}
 .ubtn.ub{border-color:var(--batu);color:var(--batu);} .ubtn.ub.sel{background:var(--batu);color:#fff;}
+.actbtns{display:flex;gap:3px;justify-content:center;}
 .delbtn{background:none;border:none;color:#cbd5e1;cursor:pointer;font-size:.93rem;padding:4px 6px;border-radius:6px;transition:all .15s;}
 .delbtn:hover{color:var(--batu);background:var(--batu-bg);}
+.editbtn{background:none;border:none;color:#cbd5e1;cursor:pointer;font-size:.93rem;padding:4px 6px;border-radius:6px;transition:all .15s;}
+.editbtn:hover{color:#6366f1;background:#eef2ff;}
 .empty-st{text-align:center;padding:54px 20px;color:var(--sub);}
 .empty-st .ei{font-size:2.4rem;margin-bottom:8px;}
 
@@ -306,7 +309,7 @@ td{padding:10px 12px;vertical-align:middle;}
 <!-- ===== 問題追加モーダル ===== -->
 <div class="amov" id="add-modal">
   <div class="amodal">
-    <h2>➕ 問題を追加</h2>
+    <h2 id="add-modal-title">➕ 問題を追加</h2>
     <div class="frow">
       <div class="fg">
         <label>科目</label>
@@ -325,7 +328,7 @@ td{padding:10px 12px;vertical-align:middle;}
     </div>
     <div class="factions">
       <button class="btn2" onclick="closeAddModal()">キャンセル</button>
-      <button class="btn1" onclick="addQuestion()">追加する</button>
+      <button class="btn1" id="add-modal-btn" onclick="saveModalQuestion()">追加する</button>
     </div>
   </div>
 </div>
@@ -850,7 +853,7 @@ function rowHTML(q, n) {
         <button class="ubtn ub ${bS}" onclick="setUnderstanding('${q.id}','×')">×</button>
       </div>
     </td>
-    <td class="ca"><button class="delbtn" onclick="deleteQuestion('${q.id}')">🗑️</button></td>`;
+    <td class="ca"><div class="actbtns"><button class="editbtn" onclick="openEditModal('${q.id}')" title="編集">✏️</button><button class="delbtn" onclick="deleteQuestion('${q.id}')" title="削除">🗑️</button></div></td>`;
 }
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
@@ -891,9 +894,14 @@ function updateProgress() {
 }
 
 // =====================================================
-// 追加モーダル
+// 追加・編集モーダル
 // =====================================================
+let editingId = null;  // null=追加モード、id=編集モード
+
 function openAddModal() {
+  editingId = null;
+  document.getElementById('add-modal-title').textContent = '➕ 問題を追加';
+  document.getElementById('add-modal-btn').textContent   = '追加する';
   document.getElementById('inp-sub').value  = '数学';
   document.getElementById('inp-yr').value   = new Date().getFullYear();
   document.getElementById('inp-qn').value   = '';
@@ -901,7 +909,48 @@ function openAddModal() {
   document.getElementById('add-modal').classList.add('open');
   setTimeout(() => document.getElementById('inp-qn').focus(), 100);
 }
-function closeAddModal() { document.getElementById('add-modal').classList.remove('open'); }
+
+function openEditModal(id) {
+  const q = questions.find(q => q.id === id);
+  if (!q) return;
+  editingId = id;
+  document.getElementById('add-modal-title').textContent = '✏️ 問題を編集';
+  document.getElementById('add-modal-btn').textContent   = '保存する';
+  document.getElementById('inp-sub').value  = q.subject || '数学';
+  document.getElementById('inp-yr').value   = q.year    || '';
+  document.getElementById('inp-qn').value   = q.qnum    || '';
+  document.getElementById('inp-memo').value = q.memo    || '';
+  document.getElementById('add-modal').classList.add('open');
+  setTimeout(() => document.getElementById('inp-memo').focus(), 100);
+}
+
+function closeAddModal() {
+  document.getElementById('add-modal').classList.remove('open');
+  editingId = null;
+}
+
+function saveModalQuestion() {
+  if (editingId) {
+    saveEditQuestion();
+  } else {
+    addQuestion();
+  }
+}
+
+function saveEditQuestion() {
+  const qnum = document.getElementById('inp-qn').value.trim();
+  if (!qnum) { showToast('❌ 問題番号を入力してください'); return; }
+  const q = questions.find(q => q.id === editingId);
+  if (!q) return;
+  q.subject = document.getElementById('inp-sub').value.trim();
+  q.year    = document.getElementById('inp-yr').value.trim();
+  q.qnum    = qnum;
+  q.memo    = document.getElementById('inp-memo').value.trim();
+  renderRowById(editingId);
+  closeAddModal();
+  saveMeta();
+  showToast('✅ 保存しました');
+}
 
 // =====================================================
 // ユーティリティ
@@ -926,7 +975,7 @@ function showToast(msg) {
 
 document.addEventListener('keydown', e => {
   if (e.key==='Escape') { closeViewModal(); closeAddModal(); }
-  if (e.key==='Enter' && document.getElementById('add-modal').classList.contains('open')) addQuestion();
+  if (e.key==='Enter' && document.getElementById('add-modal').classList.contains('open')) saveModalQuestion();
 });
 document.getElementById('view-modal').addEventListener('click', e => { if(e.target===document.getElementById('view-modal')) closeViewModal(); });
 document.getElementById('add-modal').addEventListener('click', e => { if(e.target===document.getElementById('add-modal')) closeAddModal(); });
